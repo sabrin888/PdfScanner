@@ -58,10 +58,38 @@ const TOOLS: Array<{ id: ToolId; icon: React.ReactNode }> = [
 interface Props {
   activeTool: ToolId | null;
   onSelect: (id: ToolId) => void;
+  /** mobile = horizontal scrollable row; desktop = vertical column */
+  orientation?: "horizontal" | "vertical";
 }
 
-export default function Toolbar({ activeTool, onSelect }: Props) {
+export default function Toolbar({ activeTool, onSelect, orientation = "vertical" }: Props) {
   const { t } = useI18n();
+
+  if (orientation === "horizontal") {
+    return (
+      <div className="flex flex-row gap-1 px-2 py-1 overflow-x-auto bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+        {TOOLS.map(({ id, icon }) => (
+          <button
+            key={id}
+            onClick={() => onSelect(id)}
+            title={t(`tool_${id}`)}
+            className={`
+              flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg text-xs font-medium
+              flex-shrink-0 transition-all
+              ${activeTool === id
+                ? "bg-blue-600 text-white shadow"
+                : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700"
+              }
+            `}
+          >
+            {icon}
+            <span className="text-[10px]">{t(`tool_${id}`)}</span>
+          </button>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-800 rounded-xl shadow border border-slate-200 dark:border-slate-700">
       {TOOLS.map(({ id, icon }) => (
