@@ -38,8 +38,8 @@ export default function PdfUpload({ onFile }: Props) {
         border-2 border-dashed rounded-2xl p-12 cursor-pointer select-none
         transition-all duration-200
         ${dragging
-          ? "border-blue-500 bg-blue-50 dark:bg-blue-950/30"
-          : "border-slate-300 dark:border-slate-600 hover:border-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800/40"
+          ? "border-blue-500 bg-blue-50 dark:bg-blue-900/40"
+          : "bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-500 hover:border-blue-400 hover:bg-slate-50 dark:hover:bg-slate-700/60"
         }
       `}
     >

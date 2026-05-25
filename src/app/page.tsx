@@ -4,7 +4,7 @@ import LanguageToggle from "@/components/LanguageToggle";
 
 export default function Home() {
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="flex flex-col min-h-screen">
       {/* Header */}
       <header className="flex-shrink-0 flex items-center justify-between px-5 py-3 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 shadow-sm z-10">
         <div className="flex items-center gap-3">
@@ -22,7 +22,7 @@ export default function Home() {
       </header>
 
       {/* Main editor area */}
-      <main className="flex-1 min-h-0 overflow-hidden flex">
+      <main className="flex-1 flex flex-col">
         <PdfEditor />
       </main>
     </div>
