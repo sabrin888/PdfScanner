@@ -7,7 +7,6 @@ import PdfUpload from "./PdfUpload";
 import PdfViewer, { PdfViewerHandle } from "./PdfViewer";
 import Toolbar, { ToolId } from "./Toolbar";
 import OcrTool from "./tools/OcrTool";
-import FindTool from "./tools/FindTool";
 import ReplaceTool from "./tools/ReplaceTool";
 import AnnotateTool from "./tools/AnnotateTool";
 import SignTool from "./tools/SignTool";
@@ -29,13 +28,34 @@ export default function PdfEditor() {
   const [totalPages, setTotalPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [activeTool, setActiveTool] = useState<ToolId | null>(null);
-  const [wordOverlays, setWordOverlays] = useState<OcrWord[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showPanel, setShowPanel] = useState(false);
   const [restoring, setRestoring] = useState(true);
 
-  // Restore a previously-open document on first load (survives refresh)
+  // Replace tool state
+  const [ocrWords, setOcrWords] = useState<OcrWord[]>([]);
+  const [selectedWord, setSelectedWord] = useState<OcrWord | null>(null);
+
+  // Sign tool state
+  const [signClickPos, setSignClickPos] = useState<{ cssX: number; cssY: number } | null>(null);
+
+  // Canvas interaction mode
+  const [canvasClickMode, setCanvasClickMode] = useState<"select-word" | "place-sign" | null>(null);
+
+  // Clear interactive state whenever the active tool changes
+  useEffect(() => {
+    setCanvasClickMode(null);
+    if (activeTool !== "replace") {
+      setOcrWords([]);
+      setSelectedWord(null);
+    }
+    if (activeTool !== "sign") {
+      setSignClickPos(null);
+    }
+  }, [activeTool]);
+
+  // Restore a previously-open document on first load
   useEffect(() => {
     let active = true;
     (async () => {
@@ -52,7 +72,7 @@ export default function PdfEditor() {
     return () => { active = false; };
   }, []);
 
-  // Persist the document + edits whenever they change
+  // Persist whenever document or edits change
   useEffect(() => {
     if (restoring || !pdfBytes) return;
     saveDoc({ bytes: pdfBytes, filename, totalPages, currentPage, history });
@@ -63,21 +83,26 @@ export default function PdfEditor() {
     setSessionId(null);
     setHistory([]);
     setActiveTool(null);
+    setOcrWords([]);
+    setSelectedWord(null);
+    setSignClickPos(null);
+    setCanvasClickMode(null);
     clearDoc();
   }
 
   async function handleFile(bytes: Uint8Array, name: string) {
-    // Show the editor immediately — don't block on pdfjs loading
     setPdfBytes(bytes);
     setFilename(name);
     setCurrentPage(1);
     setActiveTool(null);
-    setWordOverlays([]);
+    setOcrWords([]);
+    setSelectedWord(null);
+    setSignClickPos(null);
+    setCanvasClickMode(null);
     setHistory([]);
     setTotalPages(0);
     setShowPanel(false);
 
-    // Get page count in the background — pdfjs-dist v5 uses named exports
     try {
       const pdfjsLib = await import("pdfjs-dist");
       pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
@@ -100,6 +125,11 @@ export default function PdfEditor() {
   const handleResult = useCallback(
     async (newBytes: Uint8Array, operation: string, params: object) => {
       setPdfBytes(newBytes);
+      // Clear interactive overlays after a successful edit
+      setOcrWords([]);
+      setSelectedWord(null);
+      setSignClickPos(null);
+      setCanvasClickMode(null);
       const entry: HistoryEntry = { operation, params, time: new Date().toLocaleTimeString() };
       setHistory((h) => [entry, ...h]);
       if (sessionId) {
@@ -133,7 +163,18 @@ export default function PdfEditor() {
 
   const getCanvas = useCallback(() => viewerRef.current?.getCanvas() ?? null, []);
 
-  // ─── Restoring saved document ─────────────────────────────────────────────
+  // ─── Canvas interaction callbacks ─────────────────────────────────────────
+  function handleWordClick(word: OcrWord) {
+    setSelectedWord(word);
+    setCanvasClickMode(null); // deactivate click mode after selection
+  }
+
+  function handleCanvasClick(cssX: number, cssY: number) {
+    setSignClickPos({ cssX, cssY });
+    setCanvasClickMode(null); // deactivate after placement
+  }
+
+  // ─── Restoring ────────────────────────────────────────────────────────────
   if (restoring) {
     return (
       <div className="flex flex-col items-center justify-center flex-1 w-full min-h-[70vh] gap-3">
@@ -158,24 +199,39 @@ export default function PdfEditor() {
     );
   }
 
+  // Shared props for tool content
+  const toolProps = {
+    pdfBytes,
+    currentPage,
+    getCanvas,
+    handleResult,
+    ocrWords,
+    selectedWord,
+    onWordsLoaded: (words: OcrWord[]) => setOcrWords(words),
+    onStartWordSelect: () => setCanvasClickMode("select-word"),
+    onWordClick: handleWordClick,
+    signClickPos,
+    onActivatePlace: () => setCanvasClickMode("place-sign"),
+  };
+
   // ─── Editor screen ────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col w-full flex-1">
 
-      {/* ── Mobile toolbar (horizontal, shown below header on small screens) ── */}
+      {/* Mobile toolbar */}
       <div className="md:hidden">
         <Toolbar activeTool={activeTool} onSelect={selectTool} orientation="horizontal" />
       </div>
 
-      {/* ── Main area ──────────────────────────────────────────────────────── */}
+      {/* Main area */}
       <div className="flex flex-1 w-full gap-3 p-3 md:p-4 min-h-0">
 
-        {/* Desktop sidebar toolbar */}
+        {/* Desktop sidebar */}
         <div className="hidden md:flex flex-shrink-0">
           <Toolbar activeTool={activeTool} onSelect={selectTool} orientation="vertical" />
         </div>
 
-        {/* PDF viewer — takes all remaining width */}
+        {/* PDF viewer */}
         <div className="flex-1 min-w-0 overflow-auto">
           <PdfViewer
             ref={viewerRef}
@@ -183,30 +239,29 @@ export default function PdfEditor() {
             currentPage={currentPage}
             totalPages={totalPages}
             onPageChange={setCurrentPage}
-            wordOverlays={activeTool === "find" ? wordOverlays : []}
+            wordOverlays={activeTool === "replace" ? ocrWords : []}
+            selectedWord={activeTool === "replace" ? selectedWord : null}
+            clickMode={canvasClickMode}
+            onWordClick={handleWordClick}
+            onCanvasClick={handleCanvasClick}
           />
         </div>
 
-        {/* Desktop right panel (hidden on mobile) */}
+        {/* Desktop right panel */}
         <div className="hidden md:flex flex-shrink-0 w-72 flex-col gap-3">
           <RightPanel
             t={t}
             download={download}
             activeTool={activeTool}
-            pdfBytes={pdfBytes}
-            currentPage={currentPage}
-            getCanvas={getCanvas}
-            handleResult={handleResult}
-            setWordOverlays={setWordOverlays}
+            toolProps={toolProps}
             history={history}
             onNewFile={newFile}
           />
         </div>
       </div>
 
-      {/* ── Mobile bottom bar ─────────────────────────────────────────────── */}
+      {/* Mobile bottom bar */}
       <div className="md:hidden flex flex-col border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
-        {/* Tool panel drawer — slides in when a tool is active */}
         {activeTool && showPanel && (
           <div className="p-4 border-b border-slate-200 dark:border-slate-700 max-h-72 overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
@@ -220,18 +275,10 @@ export default function PdfEditor() {
                 ✕
               </button>
             </div>
-            <ToolContent
-              activeTool={activeTool}
-              pdfBytes={pdfBytes}
-              currentPage={currentPage}
-              getCanvas={getCanvas}
-              handleResult={handleResult}
-              setWordOverlays={setWordOverlays}
-            />
+            <ToolContent activeTool={activeTool} toolProps={toolProps} />
           </div>
         )}
 
-        {/* Bottom action bar */}
         <div className="flex gap-2 p-3">
           <button
             onClick={download}
@@ -254,38 +301,54 @@ export default function PdfEditor() {
   );
 }
 
-// ─── Shared tool content (used in both desktop panel and mobile drawer) ──────
-function ToolContent({
-  activeTool,
-  pdfBytes,
-  currentPage,
-  getCanvas,
-  handleResult,
-  setWordOverlays,
-}: {
-  activeTool: ToolId;
+// ─── Shared tool props type ───────────────────────────────────────────────────
+interface ToolProps {
   pdfBytes: Uint8Array;
   currentPage: number;
   getCanvas: () => HTMLCanvasElement | null;
   handleResult: (bytes: Uint8Array, op: string, params: object) => Promise<void>;
-  setWordOverlays: (words: OcrWord[]) => void;
-}) {
+  ocrWords: OcrWord[];
+  selectedWord: OcrWord | null;
+  onWordsLoaded: (words: OcrWord[]) => void;
+  onStartWordSelect: () => void;
+  onWordClick: (word: OcrWord) => void;
+  signClickPos: { cssX: number; cssY: number } | null;
+  onActivatePlace: () => void;
+}
+
+// ─── Shared tool content ─────────────────────────────────────────────────────
+function ToolContent({ activeTool, toolProps }: { activeTool: ToolId; toolProps: ToolProps }) {
+  const { pdfBytes, currentPage, getCanvas, handleResult, ocrWords, selectedWord,
+    onWordsLoaded, onStartWordSelect, signClickPos, onActivatePlace } = toolProps;
   return (
     <>
       {activeTool === "ocr" && (
         <OcrTool pdfBytes={pdfBytes} pageIndex={currentPage - 1} getCanvas={getCanvas} onResult={handleResult} />
       )}
-      {activeTool === "find" && (
-        <FindTool getCanvas={getCanvas} onWords={setWordOverlays} />
-      )}
       {activeTool === "replace" && (
-        <ReplaceTool pdfBytes={pdfBytes} pageIndex={currentPage - 1} getCanvas={getCanvas} onResult={handleResult} />
+        <ReplaceTool
+          pdfBytes={pdfBytes}
+          pageIndex={currentPage - 1}
+          getCanvas={getCanvas}
+          onResult={handleResult}
+          ocrWords={ocrWords}
+          selectedWord={selectedWord}
+          onWordsLoaded={onWordsLoaded}
+          onStartWordSelect={onStartWordSelect}
+        />
       )}
       {activeTool === "annotate" && (
         <AnnotateTool pdfBytes={pdfBytes} pageIndex={currentPage - 1} onResult={handleResult} />
       )}
       {activeTool === "sign" && (
-        <SignTool pdfBytes={pdfBytes} pageIndex={currentPage - 1} onResult={handleResult} />
+        <SignTool
+          pdfBytes={pdfBytes}
+          pageIndex={currentPage - 1}
+          getCanvas={getCanvas}
+          onResult={handleResult}
+          signClickPos={signClickPos}
+          onActivatePlace={onActivatePlace}
+        />
       )}
       {activeTool === "fill" && (
         <FillTool pdfBytes={pdfBytes} onResult={handleResult} />
@@ -296,17 +359,12 @@ function ToolContent({
 
 // ─── Desktop right panel ─────────────────────────────────────────────────────
 function RightPanel({
-  t, download, activeTool, pdfBytes, currentPage, getCanvas,
-  handleResult, setWordOverlays, history, onNewFile,
+  t, download, activeTool, toolProps, history, onNewFile,
 }: {
   t: (k: string) => string;
   download: () => void;
   activeTool: ToolId | null;
-  pdfBytes: Uint8Array;
-  currentPage: number;
-  getCanvas: () => HTMLCanvasElement | null;
-  handleResult: (bytes: Uint8Array, op: string, params: object) => Promise<void>;
-  setWordOverlays: (words: OcrWord[]) => void;
+  toolProps: ToolProps;
   history: HistoryEntry[];
   onNewFile: () => void;
 }) {
@@ -327,14 +385,7 @@ function RightPanel({
           <h3 className="font-semibold text-slate-800 dark:text-slate-100 mb-3 text-sm">
             {t(`tool_${activeTool}`)}
           </h3>
-          <ToolContent
-            activeTool={activeTool}
-            pdfBytes={pdfBytes}
-            currentPage={currentPage}
-            getCanvas={getCanvas}
-            handleResult={handleResult}
-            setWordOverlays={setWordOverlays}
-          />
+          <ToolContent activeTool={activeTool} toolProps={toolProps} />
         </div>
       )}
 

@@ -190,6 +190,73 @@ export async function stampSignature(
   return doc.save();
 }
 
+/** Replace a single specific word (identified by its bounding box) with new text. */
+export async function replaceWordByBbox(
+  pdfBytes: Uint8Array,
+  pageIndex: number,
+  word: OcrWord,
+  newText: string,
+  fontSize: number | null,
+  canvasWidth: number,
+  canvasHeight: number
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(pdfBytes);
+  const page = doc.getPages()[pageIndex];
+  const { width: pdfW, height: pdfH } = page.getSize();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+
+  const scaleX = pdfW / canvasWidth;
+  const scaleY = pdfH / canvasHeight;
+
+  const x0 = word.x0 * scaleX;
+  const x1 = word.x1 * scaleX;
+  const y0pdf = pdfH - word.y1 * scaleY;
+  const y1pdf = pdfH - word.y0 * scaleY;
+  const boxH = y1pdf - y0pdf;
+  const boxW = x1 - x0;
+
+  page.drawRectangle({ x: x0, y: y0pdf, width: boxW, height: boxH, color: rgb(1, 1, 1) });
+
+  const fs = fontSize ?? boxH * 0.8;
+  page.drawText(newText, {
+    x: x0,
+    y: y0pdf + boxH * 0.18,
+    size: Math.max(4, fs),
+    font,
+    color: rgb(0, 0, 0),
+  });
+
+  return doc.save();
+}
+
+/** Stamp a signature image using CSS-pixel coordinates (converted to PDF space internally). */
+export async function stampSignatureAtCss(
+  pdfBytes: Uint8Array,
+  pageIndex: number,
+  imageBytes: Uint8Array,
+  cssX: number,
+  cssY: number,
+  cssW: number,
+  cssH: number,
+  canvasCssWidth: number,
+  canvasCssHeight: number
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(pdfBytes);
+  const page = doc.getPages()[pageIndex];
+  const { width: pdfW, height: pdfH } = page.getSize();
+  const scaleX = pdfW / canvasCssWidth;
+  const scaleY = pdfH / canvasCssHeight;
+
+  const pdfX = cssX * scaleX;
+  const sigH = cssH * scaleY;
+  const pdfY = pdfH - cssY * scaleY - sigH;
+  const sigW = cssW * scaleX;
+
+  const img = await doc.embedPng(imageBytes);
+  page.drawImage(img, { x: pdfX, y: pdfY, width: sigW, height: sigH });
+  return doc.save();
+}
+
 export async function fillFormFields(
   pdfBytes: Uint8Array,
   fields: Record<string, string>
