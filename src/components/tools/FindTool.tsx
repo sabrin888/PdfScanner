@@ -10,7 +10,8 @@ interface Props {
 }
 
 export default function FindTool({ getCanvas, onWords }: Props) {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
+  const [ocrLang, setOcrLang] = useState("eng");
   const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [progress, setProgress] = useState(0);
   const [words, setWords] = useState<OcrWord[]>([]);
@@ -23,7 +24,7 @@ export default function FindTool({ getCanvas, onWords }: Props) {
     setStatus("running");
     setError("");
     try {
-      const result = await ocrCanvas(canvas, lang === "so" ? "som+eng" : "eng", setProgress);
+      const result = await ocrCanvas(canvas, ocrLang, setProgress);
       setWords(result);
       onWords(result);
       setStatus("done");
@@ -40,6 +41,16 @@ export default function FindTool({ getCanvas, onWords }: Props) {
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-500 dark:text-slate-400">{t("find_desc")}</p>
+      <select
+        value={ocrLang}
+        onChange={(e) => setOcrLang(e.target.value)}
+        className="w-full px-3 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+      >
+        <option value="eng">English</option>
+        <option value="som">Somali</option>
+        <option value="ara">Arabic</option>
+        <option value="fra">French</option>
+      </select>
       {status === "running" && (
         <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
           <div className="bg-blue-500 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />

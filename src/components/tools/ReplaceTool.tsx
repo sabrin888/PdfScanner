@@ -13,7 +13,8 @@ interface Props {
 }
 
 export default function ReplaceTool({ pdfBytes, pageIndex, getCanvas, onResult }: Props) {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
+  const [ocrLang, setOcrLang] = useState("eng");
   const [findText, setFindText] = useState("");
   const [newText, setNewText] = useState("");
   const [fontSize, setFontSize] = useState("");
@@ -27,7 +28,7 @@ export default function ReplaceTool({ pdfBytes, pageIndex, getCanvas, onResult }
     setStatus("running");
     setProgress(0);
     try {
-      const words = await ocrCanvas(canvas, lang === "so" ? "som+eng" : "eng", setProgress);
+      const words = await ocrCanvas(canvas, ocrLang, setProgress);
       const fs = fontSize ? parseFloat(fontSize) : null;
       const newBytes = await replaceText(
         pdfBytes, pageIndex, words, findText, newText,
@@ -48,6 +49,16 @@ export default function ReplaceTool({ pdfBytes, pageIndex, getCanvas, onResult }
   return (
     <div className="space-y-3">
       <p className="text-sm text-slate-500 dark:text-slate-400">{t("replace_desc")}</p>
+      <select
+        value={ocrLang}
+        onChange={(e) => setOcrLang(e.target.value)}
+        className="w-full px-3 py-1.5 text-sm border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100"
+      >
+        <option value="eng">English</option>
+        <option value="som">Somali</option>
+        <option value="ara">Arabic</option>
+        <option value="fra">French</option>
+      </select>
       <label className="block">
         <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{t("replace_find_label")}</span>
         <input

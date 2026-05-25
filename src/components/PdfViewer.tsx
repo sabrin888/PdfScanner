@@ -12,6 +12,7 @@ interface Props {
 }
 
 export interface PdfViewerHandle {
+  /** Returns the canvas rendered at full pixel resolution (may be dpr×CSS size) */
   getCanvas: () => HTMLCanvasElement | null;
 }
 
@@ -24,14 +25,11 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  useImperativeHandle(ref, () => ({
-    getCanvas: () => canvasRef.current,
-  }));
+  useImperativeHandle(ref, () => ({ getCanvas: () => canvasRef.current }));
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      // pdfjs-dist v5 uses named exports — do NOT use .default
       const pdfjsLib = await import("pdfjs-dist");
       pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
@@ -40,41 +38,51 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       const page = await pdf.getPage(currentPage);
       if (cancelled) return;
 
-      // Calculate scale to fill container width
-      const containerWidth = containerRef.current?.clientWidth ?? 600;
-      const baseViewport = page.getViewport({ scale: 1 });
-      const scale = Math.min((containerWidth - 8) / baseViewport.width, 2.5);
-
-      const viewport = page.getViewport({ scale });
       const canvas = canvasRef.current;
       if (!canvas || cancelled) return;
 
+      // Fit to container width, then multiply by devicePixelRatio for sharp rendering
+      const containerWidth = containerRef.current?.clientWidth ?? 680;
+      const dpr = window.devicePixelRatio || 1;
+      const baseViewport = page.getViewport({ scale: 1 });
+
+      // CSS display width = fill container (max 900px so large monitors don't over-stretch)
+      const cssWidth = Math.min(containerWidth - 4, 900);
+      const scale = cssWidth / baseViewport.width;
+
+      // Physical canvas pixels = CSS size × dpr (crisp on Retina / high-DPI)
+      const viewport = page.getViewport({ scale: scale * dpr });
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      const ctx = canvas.getContext("2d")!;
+      // CSS size tells the browser how large to *display* it
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${(viewport.height / dpr)}px`;
 
-      // pdfjs v5 render signature requires canvas + canvasContext
+      const ctx = canvas.getContext("2d")!;
       await page.render({ canvasContext: ctx, viewport, canvas }).promise;
     })();
     return () => { cancelled = true; };
   }, [pdfBytes, currentPage]);
 
-  // Draw word overlays on top
+  // Draw word-find overlays on the overlay canvas (same physical size as base)
   useEffect(() => {
     const overlay = overlayRef.current;
     const base = canvasRef.current;
     if (!overlay || !base) return;
     overlay.width = base.width;
     overlay.height = base.height;
+    overlay.style.width = base.style.width;
+    overlay.style.height = base.style.height;
     const ctx = overlay.getContext("2d")!;
     ctx.clearRect(0, 0, overlay.width, overlay.height);
     if (!wordOverlays?.length) return;
-    ctx.strokeStyle = "rgba(59, 130, 246, 0.9)";
-    ctx.fillStyle = "rgba(59, 130, 246, 0.15)";
-    ctx.lineWidth = 1.5;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.strokeStyle = "rgba(59,130,246,0.9)";
+    ctx.fillStyle = "rgba(59,130,246,0.15)";
+    ctx.lineWidth = 1.5 * dpr;
     for (const w of wordOverlays) {
-      ctx.fillRect(w.x0, w.y0, w.x1 - w.x0, w.y1 - w.y0);
-      ctx.strokeRect(w.x0, w.y0, w.x1 - w.x0, w.y1 - w.y0);
+      ctx.fillRect(w.x0 * dpr, w.y0 * dpr, (w.x1 - w.x0) * dpr, (w.y1 - w.y0) * dpr);
+      ctx.strokeRect(w.x0 * dpr, w.y0 * dpr, (w.x1 - w.x0) * dpr, (w.y1 - w.y0) * dpr);
     }
   }, [wordOverlays]);
 
@@ -82,30 +90,28 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
 
   return (
     <div className="flex flex-col items-center gap-3 w-full">
-      {/* Canvas area */}
       <div ref={containerRef} className="w-full flex justify-center">
         <div className="relative shadow-xl rounded overflow-hidden bg-white">
-          <canvas ref={canvasRef} className="block max-w-full" />
+          <canvas ref={canvasRef} className="block" />
           <canvas ref={overlayRef} className="absolute inset-0 pointer-events-none" />
         </div>
       </div>
 
-      {/* Page controls */}
-      <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 flex-wrap justify-center">
+      <div className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300 flex-wrap justify-center pb-2">
         <button
           onClick={() => onPageChange(Math.max(1, currentPage - 1))}
           disabled={currentPage <= 1}
-          className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 disabled:opacity-40 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors font-medium"
+          className="px-4 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 disabled:opacity-40 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors font-medium"
         >
           ←
         </button>
-        <span className="px-2">
-          {t("page_label")} <strong>{currentPage}</strong> {t("of_label")} {safeTotal}
+        <span className="px-2 font-medium">
+          {t("page_label")} {currentPage} {t("of_label")} {safeTotal}
         </span>
         <button
           onClick={() => onPageChange(Math.min(safeTotal, currentPage + 1))}
           disabled={currentPage >= safeTotal}
-          className="px-3 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 disabled:opacity-40 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors font-medium"
+          className="px-4 py-1.5 rounded-lg bg-slate-200 dark:bg-slate-700 disabled:opacity-40 hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors font-medium"
         >
           →
         </button>
