@@ -19,6 +19,7 @@
 # misc
 .DS_Store
 *.pem
+# Do NOT ignore public/pdf.worker.min.mjs — it is a required static asset
 
 # debug
 npm-debug.log*

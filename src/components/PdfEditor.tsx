@@ -33,27 +33,35 @@ export default function PdfEditor() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
 
   async function handleFile(bytes: Uint8Array, name: string) {
-    const pdfjsLib = (await import("pdfjs-dist")).default;
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
-    setTotalPages(pdf.numPages);
+    // Show the editor immediately — don't block on pdfjs loading
     setPdfBytes(bytes);
     setFilename(name);
     setCurrentPage(1);
     setActiveTool(null);
     setWordOverlays([]);
     setHistory([]);
+    setTotalPages(0); // PdfViewer will render; we get page count separately
 
+    // Get page count in the background
     try {
-      const res = await fetch("/api/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: name, page_count: pdf.numPages }),
-      });
-      const data = await res.json();
-      if (data.id) setSessionId(data.id);
+      const pdfjsLib = (await import("pdfjs-dist")).default;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+      const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+      setTotalPages(pdf.numPages);
+      try {
+        const res = await fetch("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: name, page_count: pdf.numPages }),
+        });
+        const data = await res.json();
+        if (data.id) setSessionId(data.id);
+      } catch {
+        // DB unavailable — continue without history tracking
+      }
     } catch {
-      // DB unavailable — continue without history tracking
+      // pdfjs failed to parse — editor still shows with page count 1
+      setTotalPages(1);
     }
   }
 
