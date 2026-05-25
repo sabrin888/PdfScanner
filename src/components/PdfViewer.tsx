@@ -32,7 +32,7 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     let cancelled = false;
     (async () => {
       const pdfjsLib = (await import("pdfjs-dist")).default;
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
       const pdf = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
       if (cancelled) return;
