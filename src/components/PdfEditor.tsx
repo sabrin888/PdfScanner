@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { useI18n } from "@/context/I18nContext";
+import { saveDoc, loadDoc, clearDoc } from "@/lib/storage";
 import PdfUpload from "./PdfUpload";
 import PdfViewer, { PdfViewerHandle } from "./PdfViewer";
 import Toolbar, { ToolId } from "./Toolbar";
@@ -32,6 +33,38 @@ export default function PdfEditor() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showPanel, setShowPanel] = useState(false);
+  const [restoring, setRestoring] = useState(true);
+
+  // Restore a previously-open document on first load (survives refresh)
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const saved = await loadDoc();
+      if (active && saved && saved.bytes.length > 0) {
+        setPdfBytes(saved.bytes);
+        setFilename(saved.filename);
+        setTotalPages(saved.totalPages || 1);
+        setCurrentPage(saved.currentPage || 1);
+        setHistory(saved.history || []);
+      }
+      if (active) setRestoring(false);
+    })();
+    return () => { active = false; };
+  }, []);
+
+  // Persist the document + edits whenever they change
+  useEffect(() => {
+    if (restoring || !pdfBytes) return;
+    saveDoc({ bytes: pdfBytes, filename, totalPages, currentPage, history });
+  }, [pdfBytes, filename, totalPages, currentPage, history, restoring]);
+
+  function newFile() {
+    setPdfBytes(null);
+    setSessionId(null);
+    setHistory([]);
+    setActiveTool(null);
+    clearDoc();
+  }
 
   async function handleFile(bytes: Uint8Array, name: string) {
     // Show the editor immediately — don't block on pdfjs loading
@@ -100,6 +133,16 @@ export default function PdfEditor() {
 
   const getCanvas = useCallback(() => viewerRef.current?.getCanvas() ?? null, []);
 
+  // ─── Restoring saved document ─────────────────────────────────────────────
+  if (restoring) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 w-full min-h-[70vh] gap-3">
+        <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm text-slate-400">{t("processing")}</p>
+      </div>
+    );
+  }
+
   // ─── Upload screen ────────────────────────────────────────────────────────
   if (!pdfBytes) {
     return (
@@ -156,7 +199,7 @@ export default function PdfEditor() {
             handleResult={handleResult}
             setWordOverlays={setWordOverlays}
             history={history}
-            onNewFile={() => { setPdfBytes(null); setSessionId(null); }}
+            onNewFile={newFile}
           />
         </div>
       </div>
@@ -200,7 +243,7 @@ export default function PdfEditor() {
             {t("download_button")}
           </button>
           <button
-            onClick={() => { setPdfBytes(null); setSessionId(null); }}
+            onClick={newFile}
             className="px-4 py-2.5 text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 border border-slate-300 dark:border-slate-600 rounded-xl transition-colors"
           >
             ← {t("upload_button")}

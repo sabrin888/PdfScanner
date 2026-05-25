@@ -33,7 +33,9 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       const pdfjsLib = await import("pdfjs-dist");
       pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
-      const pdf = await pdfjsLib.getDocument({ data: pdfBytes }).promise;
+      // Pass a COPY — pdfjs transfers the buffer to its worker and detaches it,
+      // which would corrupt the bytes we keep in React state for editing.
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes) }).promise;
       if (cancelled) return;
       const page = await pdf.getPage(currentPage);
       if (cancelled) return;
@@ -59,7 +61,7 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
       canvas.style.height = `${(viewport.height / dpr)}px`;
 
       const ctx = canvas.getContext("2d")!;
-      await page.render({ canvasContext: ctx, viewport, canvas }).promise;
+      await page.render({ canvasContext: ctx, viewport }).promise;
     })();
     return () => { cancelled = true; };
   }, [pdfBytes, currentPage]);
