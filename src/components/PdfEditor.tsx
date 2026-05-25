@@ -91,7 +91,7 @@ export default function PdfEditor() {
 
   if (!pdfBytes) {
     return (
-      <div className="flex flex-col items-center justify-center flex-1 px-4 py-12">
+      <div className="flex flex-col items-center justify-center flex-1 w-full px-4 py-16 min-h-[70vh]">
         <h1 className="text-3xl font-bold text-slate-800 dark:text-slate-100 mb-2">{t("app_title")}</h1>
         <p className="text-slate-500 dark:text-slate-400 mb-10">{t("app_subtitle")}</p>
         <PdfUpload onFile={handleFile} />
@@ -100,7 +100,7 @@ export default function PdfEditor() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0 gap-4 p-4">
+    <div className="flex flex-1 w-full gap-4 p-4">
       {/* Toolbar */}
       <div className="flex-shrink-0">
         <Toolbar activeTool={activeTool} onSelect={(id) => setActiveTool(id === activeTool ? null : id)} />
