@@ -50,16 +50,59 @@ const TOOLS: Array<{ id: ToolId; icon: React.ReactNode }> = [
 interface Props {
   activeTool: ToolId | null;
   onSelect: (id: ToolId) => void;
-  /** mobile = horizontal scrollable row; desktop = vertical column */
   orientation?: "horizontal" | "vertical";
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
-export default function Toolbar({ activeTool, onSelect, orientation = "vertical" }: Props) {
+export default function Toolbar({
+  activeTool, onSelect, orientation = "vertical",
+  canUndo = false, canRedo = false, onUndo, onRedo,
+}: Props) {
   const { t } = useI18n();
+
+  const undoBtn = (compact?: boolean) => (
+    <button
+      key="undo"
+      onClick={onUndo}
+      disabled={!canUndo}
+      title="Undo (Ctrl+Z)"
+      className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-30
+        ${compact ? "flex-shrink-0" : ""}
+        text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:hover:bg-transparent disabled:cursor-not-allowed`}
+    >
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
+      </svg>
+      <span className="text-[10px] leading-none">Undo</span>
+    </button>
+  );
+
+  const redoBtn = (compact?: boolean) => (
+    <button
+      key="redo"
+      onClick={onRedo}
+      disabled={!canRedo}
+      title="Redo (Ctrl+Y)"
+      className={`flex flex-col items-center gap-1 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-30
+        ${compact ? "flex-shrink-0" : ""}
+        text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:hover:bg-transparent disabled:cursor-not-allowed`}
+    >
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3" />
+      </svg>
+      <span className="text-[10px] leading-none">Redo</span>
+    </button>
+  );
 
   if (orientation === "horizontal") {
     return (
       <div className="flex flex-row gap-1 px-2 py-1 overflow-x-auto bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+        {undoBtn(true)}
+        {redoBtn(true)}
+        <div className="w-px self-stretch bg-slate-200 dark:bg-slate-700 mx-1" />
         {TOOLS.map(({ id, icon }) => (
           <button
             key={id}
@@ -84,6 +127,9 @@ export default function Toolbar({ activeTool, onSelect, orientation = "vertical"
 
   return (
     <div className="flex flex-col gap-1 p-2 bg-white dark:bg-slate-800 rounded-xl shadow border border-slate-200 dark:border-slate-700">
+      {undoBtn()}
+      {redoBtn()}
+      <div className="h-px bg-slate-200 dark:bg-slate-700 mx-1 my-0.5" />
       {TOOLS.map(({ id, icon }) => (
         <button
           key={id}

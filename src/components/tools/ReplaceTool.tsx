@@ -11,25 +11,22 @@ interface Props {
   pageIndex: number;
   getCanvas: () => HTMLCanvasElement | null;
   onResult: (bytes: Uint8Array, operation: string, params: object) => void;
-  /** Words scanned from the page (set by this tool, stored in parent) */
   ocrWords: OcrWord[];
-  /** Word the user clicked on the canvas */
   selectedWord: OcrWord | null;
-  /** Called after OCR so parent can show clickable overlays */
   onWordsLoaded: (words: OcrWord[]) => void;
-  /** Called to activate word-selection click mode on the canvas */
   onStartWordSelect: () => void;
+  onClearSelectedWord: () => void;
 }
 
 export default function ReplaceTool({
   pdfBytes, pageIndex, getCanvas, onResult,
-  ocrWords, selectedWord, onWordsLoaded, onStartWordSelect,
+  ocrWords, selectedWord, onWordsLoaded, onStartWordSelect, onClearSelectedWord,
 }: Props) {
   const { t } = useI18n();
   const [scanStatus, setScanStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [progress, setProgress] = useState(0);
   const [newText, setNewText] = useState("");
-  const [applyStatus, setApplyStatus] = useState<"idle" | "done" | "error">("idle");
+  const [applyStatus, setApplyStatus] = useState<"idle" | "running" | "done" | "error">("idle");
 
   async function scan() {
     const canvas = getCanvas();
@@ -40,7 +37,6 @@ export default function ReplaceTool({
       const words = await ocrCanvas(canvas, setProgress);
       onWordsLoaded(words);
       setScanStatus("done");
-      // Immediately activate click mode so user can click a word
       onStartWordSelect();
     } catch {
       setScanStatus("error");
@@ -51,7 +47,7 @@ export default function ReplaceTool({
     if (!selectedWord || !newText) return;
     const canvas = getCanvas();
     if (!canvas) return;
-    setApplyStatus("idle");
+    setApplyStatus("running");
     try {
       const newBytes = await replaceWordByBbox(
         pdfBytes, pageIndex, selectedWord, newText, null, canvas.width, canvas.height
@@ -59,6 +55,10 @@ export default function ReplaceTool({
       onResult(newBytes, "replace_word", { pageIndex, original: selectedWord.text, replacement: newText });
       setApplyStatus("done");
       setNewText("");
+      // Clear orange highlight but keep word overlays so user can replace another word
+      onClearSelectedWord();
+      // Re-activate click mode for the next word
+      onStartWordSelect();
     } catch {
       setApplyStatus("error");
     }
@@ -68,7 +68,7 @@ export default function ReplaceTool({
     <div className="space-y-3">
       <p className="text-sm text-slate-500 dark:text-slate-400">{t("replace_desc")}</p>
 
-      {/* Step 1: Scan the page */}
+      {/* Step 1: Scan */}
       {scanStatus === "idle" && (
         <button
           onClick={scan}
@@ -88,10 +88,15 @@ export default function ReplaceTool({
       )}
 
       {scanStatus === "error" && (
-        <p className="text-sm text-red-500">{t("error_ocr")}</p>
+        <div className="space-y-2">
+          <p className="text-sm text-red-500">{t("error_ocr")}</p>
+          <button onClick={() => setScanStatus("idle")} className="w-full py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium transition-colors">
+            Try again
+          </button>
+        </div>
       )}
 
-      {/* Step 2: Click a word on the document */}
+      {/* Step 2: Click a word */}
       {scanStatus === "done" && ocrWords.length > 0 && !selectedWord && (
         <div className="space-y-2">
           <div className="rounded-lg bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 p-3 text-sm text-blue-700 dark:text-blue-300">
@@ -133,10 +138,10 @@ export default function ReplaceTool({
           <div className="flex gap-2">
             <button
               onClick={apply}
-              disabled={!newText}
+              disabled={!newText || applyStatus === "running"}
               className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
             >
-              {t("replace_apply")}
+              {applyStatus === "running" ? "Replacing…" : t("replace_apply")}
             </button>
             <button
               onClick={onStartWordSelect}

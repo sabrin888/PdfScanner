@@ -1,6 +1,5 @@
 import PdfEditor from "@/components/PdfEditor";
 import ThemeToggle from "@/components/ThemeToggle";
-import LanguageToggle from "@/components/LanguageToggle";
 
 export default function Home() {
   return (
@@ -16,7 +15,6 @@ export default function Home() {
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <LanguageToggle />
           <ThemeToggle />
         </div>
       </header>
