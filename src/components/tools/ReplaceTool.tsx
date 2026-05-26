@@ -1,66 +1,64 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useI18n } from "@/context/I18nContext";
-import { ocrCanvas } from "@/lib/ocr";
-import { replaceWordByBbox } from "@/lib/pdfProcessor";
-import type { OcrWord } from "@/lib/ocr";
+import { replaceRegion } from "@/lib/pdfProcessor";
+import type { Region, RgbColor } from "../PdfViewer";
 
 interface Props {
   pdfBytes: Uint8Array;
   pageIndex: number;
   getCanvas: () => HTMLCanvasElement | null;
   onResult: (bytes: Uint8Array, operation: string, params: object) => void;
-  ocrWords: OcrWord[];
-  selectedWord: OcrWord | null;
-  onWordsLoaded: (words: OcrWord[]) => void;
-  onStartWordSelect: () => void;
-  onClearSelectedWord: () => void;
+  region: Region | null;
+  bgColor: RgbColor | null;
+  onStartDrag: () => void;
+  onClearRegion: () => void;
+}
+
+function toHex({ r, g, b }: RgbColor): string {
+  return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+function fromHex(hex: string): RgbColor {
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16),
+  };
 }
 
 export default function ReplaceTool({
-  pdfBytes, pageIndex, getCanvas, onResult,
-  ocrWords, selectedWord, onWordsLoaded, onStartWordSelect, onClearSelectedWord,
+  pdfBytes, pageIndex, getCanvas, onResult, region, bgColor, onStartDrag, onClearRegion,
 }: Props) {
   const { t } = useI18n();
-  const [scanStatus, setScanStatus] = useState<"idle" | "running" | "done" | "error">("idle");
-  const [progress, setProgress] = useState(0);
   const [newText, setNewText] = useState("");
-  const [applyStatus, setApplyStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [color, setColor] = useState<RgbColor>({ r: 255, g: 255, b: 255 });
+  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
 
-  async function scan() {
-    const canvas = getCanvas();
-    if (!canvas) return;
-    setScanStatus("running");
-    setProgress(0);
-    try {
-      const words = await ocrCanvas(canvas, setProgress);
-      onWordsLoaded(words);
-      setScanStatus("done");
-      onStartWordSelect();
-    } catch {
-      setScanStatus("error");
-    }
-  }
+  // When a fresh region is selected, adopt its sampled background colour
+  useEffect(() => {
+    if (bgColor) setColor(bgColor);
+  }, [bgColor]);
 
   async function apply() {
-    if (!selectedWord || !newText) return;
+    if (!region) return;
     const canvas = getCanvas();
     if (!canvas) return;
-    setApplyStatus("running");
+    const cssW = parseFloat(canvas.style.width) || canvas.width;
+    const cssH = parseFloat(canvas.style.height) || canvas.height;
+    setStatus("running");
     try {
-      const newBytes = await replaceWordByBbox(
-        pdfBytes, pageIndex, selectedWord, newText, null, canvas.width, canvas.height
+      const newBytes = await replaceRegion(
+        pdfBytes, pageIndex, region, newText.trim(), color, null, cssW, cssH
       );
-      onResult(newBytes, "replace_word", { pageIndex, original: selectedWord.text, replacement: newText });
-      setApplyStatus("done");
+      onResult(newBytes, newText.trim() ? "replace_region" : "erase_region", {
+        pageIndex, replacement: newText.trim() || "(erased)",
+      });
+      setStatus("done");
       setNewText("");
-      // Clear orange highlight but keep word overlays so user can replace another word
-      onClearSelectedWord();
-      // Re-activate click mode for the next word
-      onStartWordSelect();
+      onClearRegion();
     } catch {
-      setApplyStatus("error");
+      setStatus("error");
     }
   }
 
@@ -68,56 +66,32 @@ export default function ReplaceTool({
     <div className="space-y-3">
       <p className="text-sm text-slate-500 dark:text-slate-400">{t("replace_desc")}</p>
 
-      {/* Step 1: Scan */}
-      {scanStatus === "idle" && (
-        <button
-          onClick={scan}
-          className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
-        >
-          {t("replace_scan")}
-        </button>
-      )}
-
-      {scanStatus === "running" && (
-        <div className="space-y-1.5">
-          <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
-            <div className="bg-blue-500 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />
-          </div>
-          <p className="text-xs text-slate-400">{t("replace_scanning")} ({progress}%)</p>
-        </div>
-      )}
-
-      {scanStatus === "error" && (
-        <div className="space-y-2">
-          <p className="text-sm text-red-500">{t("error_ocr")}</p>
-          <button onClick={() => setScanStatus("idle")} className="w-full py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium transition-colors">
-            Try again
-          </button>
-        </div>
-      )}
-
-      {/* Step 2: Click a word */}
-      {scanStatus === "done" && ocrWords.length > 0 && !selectedWord && (
-        <div className="space-y-2">
-          <div className="rounded-lg bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 p-3 text-sm text-blue-700 dark:text-blue-300">
-            {t("replace_click_word")}
-          </div>
+      {/* Step 1: drag a region */}
+      {!region && (
+        <>
           <button
-            onClick={onStartWordSelect}
-            className="w-full py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium transition-colors"
+            onClick={onStartDrag}
+            className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
           >
-            {t("replace_reselect")}
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75H6A2.25 2.25 0 003.75 6v1.5M16.5 3.75H18A2.25 2.25 0 0120.25 6v1.5m0 9V18A2.25 2.25 0 0118 20.25h-1.5m-9 0H6A2.25 2.25 0 013.75 18v-1.5" />
+            </svg>
+            {t("replace_select_area")}
           </button>
-        </div>
+          <p className="text-xs text-slate-400">{t("replace_hint")}</p>
+          {status === "done" && (
+            <p className="text-sm text-green-600 dark:text-green-400">{t("replace_done")}</p>
+          )}
+        </>
       )}
 
-      {/* Step 3: Word selected – type replacement */}
-      {selectedWord && (
+      {/* Step 2: region selected → choose colour + type replacement */}
+      {region && (
         <div className="space-y-3">
-          <div className="rounded-lg bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 p-3">
-            <p className="text-xs font-medium text-orange-600 dark:text-orange-400 mb-1">{t("replace_selected")}</p>
-            <p className="font-mono text-sm font-bold text-orange-800 dark:text-orange-200">{selectedWord.text}</p>
+          <div className="rounded-lg bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-700 p-3 text-sm text-orange-700 dark:text-orange-300">
+            {t("replace_area_selected")}
           </div>
+
           <label className="block">
             <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{t("replace_new_label")}</span>
             <input
@@ -129,32 +103,38 @@ export default function ReplaceTool({
               autoFocus
             />
           </label>
-          {applyStatus === "done" && (
-            <p className="text-sm text-green-600 dark:text-green-400">{t("replace_done")}</p>
-          )}
-          {applyStatus === "error" && (
-            <p className="text-sm text-red-500">{t("error_generic")}</p>
-          )}
+
+          <label className="block">
+            <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{t("replace_bg_label")}</span>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                type="color"
+                value={toHex(color)}
+                onChange={(e) => setColor(fromHex(e.target.value))}
+                className="h-9 w-12 rounded border border-slate-300 dark:border-slate-600 cursor-pointer bg-transparent"
+              />
+              <span className="text-xs text-slate-400">{t("replace_bg_hint")}</span>
+            </div>
+          </label>
+
+          {status === "error" && <p className="text-sm text-red-500">{t("error_generic")}</p>}
+
           <div className="flex gap-2">
             <button
               onClick={apply}
-              disabled={!newText || applyStatus === "running"}
+              disabled={status === "running"}
               className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
             >
-              {applyStatus === "running" ? "Replacing…" : t("replace_apply")}
+              {status === "running" ? t("replace_running") : (newText.trim() ? t("replace_apply") : t("replace_erase"))}
             </button>
             <button
-              onClick={onStartWordSelect}
+              onClick={() => { onClearRegion(); onStartDrag(); }}
               className="px-3 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-lg text-sm transition-colors"
             >
-              {t("replace_reselect")}
+              {t("replace_redraw")}
             </button>
           </div>
         </div>
-      )}
-
-      {scanStatus === "done" && ocrWords.length === 0 && (
-        <p className="text-sm text-yellow-600 dark:text-yellow-400">{t("replace_no_words")}</p>
       )}
     </div>
   );

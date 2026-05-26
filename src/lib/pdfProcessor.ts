@@ -40,63 +40,6 @@ export async function addOcrLayer(
   return doc.save();
 }
 
-export async function replaceText(
-  pdfBytes: Uint8Array,
-  pageIndex: number,
-  words: OcrWord[],
-  findText: string,
-  newText: string,
-  fontSize: number | null,
-  fgHex: string,
-  bgHex: string,
-  canvasWidth: number,
-  canvasHeight: number
-): Promise<Uint8Array> {
-  const doc = await PDFDocument.load(pdfBytes);
-  const page = doc.getPages()[pageIndex];
-  const { width: pdfW, height: pdfH } = page.getSize();
-  const font = await doc.embedFont(StandardFonts.Helvetica);
-
-  const scaleX = pdfW / canvasWidth;
-  const scaleY = pdfH / canvasHeight;
-
-  const matched = words.filter((w) =>
-    w.text.toLowerCase().includes(findText.toLowerCase())
-  );
-
-  if (matched.length === 0) return pdfBytes;
-
-  const [bgR, bgG, bgB] = hexToRgb(bgHex);
-  const [fgR, fgG, fgB] = hexToRgb(fgHex);
-
-  for (const w of matched) {
-    const x0 = w.x0 * scaleX;
-    const x1 = w.x1 * scaleX;
-    const y0pdf = pdfH - w.y1 * scaleY;
-    const y1pdf = pdfH - w.y0 * scaleY;
-    const boxH = y1pdf - y0pdf;
-    const boxW = x1 - x0;
-
-    page.drawRectangle({
-      x: x0,
-      y: y0pdf,
-      width: boxW,
-      height: boxH,
-      color: rgb(bgR, bgG, bgB),
-    });
-
-    const fs = fontSize ?? boxH * 0.8;
-    page.drawText(newText, {
-      x: x0,
-      y: y0pdf + boxH * 0.18,
-      size: Math.max(4, fs),
-      font,
-      color: rgb(fgR, fgG, fgB),
-    });
-  }
-  return doc.save();
-}
-
 export async function annotateText(
   pdfBytes: Uint8Array,
   pageIndex: number,
@@ -190,41 +133,66 @@ export async function stampSignature(
   return doc.save();
 }
 
-/** Replace a single specific word (identified by its bounding box) with new text. */
-export async function replaceWordByBbox(
+/**
+ * Replace (or erase) a dragged rectangular region.
+ *
+ * The region is covered with the supplied background colour (sampled from the
+ * page so it blends with coloured backgrounds / logos), then the new text — if
+ * any — is written on top in a contrasting colour. Pass an empty newText to
+ * simply erase the region.
+ *
+ * `rect` and the canvas dimensions are in CSS pixels (the size the page is
+ * displayed at), so they map cleanly onto PDF points.
+ */
+export async function replaceRegion(
   pdfBytes: Uint8Array,
   pageIndex: number,
-  word: OcrWord,
+  rect: { x: number; y: number; w: number; h: number },
   newText: string,
+  bgColor: { r: number; g: number; b: number },
   fontSize: number | null,
-  canvasWidth: number,
-  canvasHeight: number
+  canvasCssWidth: number,
+  canvasCssHeight: number
 ): Promise<Uint8Array> {
   const doc = await PDFDocument.load(pdfBytes);
   const page = doc.getPages()[pageIndex];
   const { width: pdfW, height: pdfH } = page.getSize();
   const font = await doc.embedFont(StandardFonts.Helvetica);
 
-  const scaleX = pdfW / canvasWidth;
-  const scaleY = pdfH / canvasHeight;
+  const scaleX = pdfW / canvasCssWidth;
+  const scaleY = pdfH / canvasCssHeight;
 
-  const x0 = word.x0 * scaleX;
-  const x1 = word.x1 * scaleX;
-  const y0pdf = pdfH - word.y1 * scaleY;
-  const y1pdf = pdfH - word.y0 * scaleY;
-  const boxH = y1pdf - y0pdf;
-  const boxW = x1 - x0;
+  const x = rect.x * scaleX;
+  const boxW = rect.w * scaleX;
+  const boxH = rect.h * scaleY;
+  const y = pdfH - (rect.y + rect.h) * scaleY; // PDF origin is bottom-left
 
-  page.drawRectangle({ x: x0, y: y0pdf, width: boxW, height: boxH, color: rgb(1, 1, 1) });
-
-  const fs = fontSize ?? boxH * 0.8;
-  page.drawText(newText, {
-    x: x0,
-    y: y0pdf + boxH * 0.18,
-    size: Math.max(4, fs),
-    font,
-    color: rgb(0, 0, 0),
+  // Cover the region with the sampled background colour
+  page.drawRectangle({
+    x, y, width: boxW, height: boxH,
+    color: rgb(bgColor.r / 255, bgColor.g / 255, bgColor.b / 255),
   });
+
+  // Write the replacement text, auto-sized to the box, in a contrasting colour
+  if (newText) {
+    const luminance = 0.299 * bgColor.r + 0.587 * bgColor.g + 0.114 * bgColor.b;
+    const textColor = luminance > 140 ? rgb(0, 0, 0) : rgb(1, 1, 1);
+    let fs = fontSize ?? boxH * 0.7;
+    // Shrink to fit width if the text would overflow the box
+    const maxW = boxW * 0.96;
+    let textW = font.widthOfTextAtSize(newText, fs);
+    while (textW > maxW && fs > 4) {
+      fs -= 0.5;
+      textW = font.widthOfTextAtSize(newText, fs);
+    }
+    page.drawText(newText, {
+      x: x + boxW * 0.03,
+      y: y + (boxH - fs) / 2 + fs * 0.12,
+      size: Math.max(4, fs),
+      font,
+      color: textColor,
+    });
+  }
 
   return doc.save();
 }

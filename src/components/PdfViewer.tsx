@@ -1,35 +1,67 @@
 "use client";
 
-import { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
+import { useEffect, useRef, useImperativeHandle, forwardRef, useState } from "react";
 import { useI18n } from "@/context/I18nContext";
-import type { OcrWord } from "@/lib/ocr";
+
+export interface Region { x: number; y: number; w: number; h: number }
+export interface RgbColor { r: number; g: number; b: number }
 
 interface Props {
   pdfBytes: Uint8Array;
   currentPage: number;
   totalPages: number;
   onPageChange: (p: number) => void;
-  wordOverlays?: OcrWord[];
-  selectedWord?: OcrWord | null;
-  /** "select-word": clicking overlay selects the word under the cursor
-   *  "place-sign": clicking anywhere reports CSS coordinates */
-  clickMode?: "select-word" | "place-sign" | null;
-  onWordClick?: (word: OcrWord) => void;
+  /** "place-sign": single click reports a point.
+   *  "drag-replace": drag a rectangle; reports the region + sampled bg colour. */
+  clickMode?: "place-sign" | "drag-replace" | null;
   onCanvasClick?: (cssX: number, cssY: number) => void;
+  onRegionSelected?: (rect: Region, bg: RgbColor) => void;
+  /** Committed region to keep highlighted (e.g. while the user types the replacement) */
+  selectedRegion?: Region | null;
 }
 
 export interface PdfViewerHandle {
   getCanvas: () => HTMLCanvasElement | null;
 }
 
+function sampleBackground(
+  base: HTMLCanvasElement, rx: number, ry: number, rw: number, rh: number, dpr: number
+): RgbColor {
+  const ctx = base.getContext("2d", { willReadFrequently: true })!;
+  const px = Math.max(0, Math.round(rx * dpr));
+  const py = Math.max(0, Math.round(ry * dpr));
+  const pw = Math.min(base.width - px, Math.round(rw * dpr));
+  const ph = Math.min(base.height - py, Math.round(rh * dpr));
+  if (pw <= 1 || ph <= 1) return { r: 255, g: 255, b: 255 };
+  const data = ctx.getImageData(px, py, pw, ph).data;
+  // Dominant colour = background (text/logos are a minority of pixels)
+  const counts = new Map<string, number>();
+  for (let i = 0; i < data.length; i += 4) {
+    const key = `${data[i] & 0xf0},${data[i + 1] & 0xf0},${data[i + 2] & 0xf0}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  let best = "240,240,240", bestN = 0;
+  counts.forEach((n, k) => { if (n > bestN) { bestN = n; best = k; } });
+  let [r, g, b] = best.split(",").map((v) => Math.min(255, Number(v) + 8));
+  // Snap near-white / near-black to pure values so the cover box is invisible
+  // on the common plain-white (or solid-black) background.
+  if (r >= 240 && g >= 240 && b >= 240) { r = g = b = 255; }
+  else if (r <= 24 && g <= 24 && b <= 24) { r = g = b = 0; }
+  return { r, g, b };
+}
+
 const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
-  { pdfBytes, currentPage, totalPages, onPageChange, wordOverlays, selectedWord, clickMode, onWordClick, onCanvasClick },
+  { pdfBytes, currentPage, totalPages, onPageChange, clickMode, onCanvasClick, onRegionSelected, selectedRegion },
   ref
 ) {
   const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ active: boolean; sx: number; sy: number; cx: number; cy: number }>({
+    active: false, sx: 0, sy: 0, cx: 0, cy: 0,
+  });
+  const [, forceRedraw] = useState(0);
 
   useImperativeHandle(ref, () => ({ getCanvas: () => canvasRef.current }));
 
@@ -38,36 +70,32 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     (async () => {
       const pdfjsLib = await import("pdfjs-dist");
       pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-
       const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes) }).promise;
       if (cancelled) return;
       const page = await pdf.getPage(currentPage);
       if (cancelled) return;
-
       const canvas = canvasRef.current;
       if (!canvas || cancelled) return;
 
       const containerWidth = containerRef.current?.clientWidth ?? 680;
       const dpr = window.devicePixelRatio || 1;
       const baseViewport = page.getViewport({ scale: 1 });
-
       const cssWidth = Math.min(containerWidth - 4, 900);
       const scale = cssWidth / baseViewport.width;
-
       const viewport = page.getViewport({ scale: scale * dpr });
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       canvas.style.width = `${cssWidth}px`;
-      canvas.style.height = `${(viewport.height / dpr)}px`;
-
-      const ctx = canvas.getContext("2d")!;
+      canvas.style.height = `${viewport.height / dpr}px`;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
       await page.render({ canvasContext: ctx, viewport }).promise;
+      drawOverlay();
     })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfBytes, currentPage]);
 
-  // Draw word overlays and selected word highlight
-  useEffect(() => {
+  function drawOverlay() {
     const overlay = overlayRef.current;
     const base = canvasRef.current;
     if (!overlay || !base) return;
@@ -77,61 +105,74 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     overlay.style.height = base.style.height;
     const ctx = overlay.getContext("2d")!;
     ctx.clearRect(0, 0, overlay.width, overlay.height);
-
     const dpr = window.devicePixelRatio || 1;
 
-    if (wordOverlays?.length) {
-      ctx.strokeStyle = "rgba(59,130,246,0.9)";
+    // Live drag rectangle
+    if (dragRef.current.active) {
+      const { sx, sy, cx, cy } = dragRef.current;
+      const x = Math.min(sx, cx), y = Math.min(sy, cy);
+      const w = Math.abs(cx - sx), h = Math.abs(cy - sy);
       ctx.fillStyle = "rgba(59,130,246,0.15)";
+      ctx.strokeStyle = "rgba(59,130,246,0.95)";
       ctx.lineWidth = 1.5 * dpr;
-      for (const w of wordOverlays) {
-        ctx.fillRect(w.x0 * dpr, w.y0 * dpr, (w.x1 - w.x0) * dpr, (w.y1 - w.y0) * dpr);
-        ctx.strokeRect(w.x0 * dpr, w.y0 * dpr, (w.x1 - w.x0) * dpr, (w.y1 - w.y0) * dpr);
-      }
-    }
-
-    // Orange highlight for selected word
-    if (selectedWord) {
-      const sw = selectedWord;
-      ctx.fillStyle = "rgba(234,88,12,0.3)";
+      ctx.setLineDash([6 * dpr, 4 * dpr]);
+      ctx.fillRect(x * dpr, y * dpr, w * dpr, h * dpr);
+      ctx.strokeRect(x * dpr, y * dpr, w * dpr, h * dpr);
+      ctx.setLineDash([]);
+    } else if (selectedRegion) {
+      const r = selectedRegion;
+      ctx.fillStyle = "rgba(234,88,12,0.18)";
       ctx.strokeStyle = "rgba(234,88,12,1)";
       ctx.lineWidth = 2 * dpr;
-      ctx.fillRect(sw.x0 * dpr, sw.y0 * dpr, (sw.x1 - sw.x0) * dpr, (sw.y1 - sw.y0) * dpr);
-      ctx.strokeRect(sw.x0 * dpr, sw.y0 * dpr, (sw.x1 - sw.x0) * dpr, (sw.y1 - sw.y0) * dpr);
-    }
-  }, [wordOverlays, selectedWord]);
-
-  function handleOverlayClick(e: React.MouseEvent<HTMLCanvasElement>) {
-    const overlay = overlayRef.current;
-    if (!overlay) return;
-    const rect = overlay.getBoundingClientRect();
-    const cssX = e.clientX - rect.left;
-    const cssY = e.clientY - rect.top;
-
-    if (clickMode === "place-sign" && onCanvasClick) {
-      onCanvasClick(cssX, cssY);
-      return;
-    }
-
-    if (clickMode === "select-word" && onWordClick && wordOverlays?.length) {
-      const dpr = window.devicePixelRatio || 1;
-      // word bboxes are in physical pixels; click offsetX/Y are CSS pixels → convert
-      const physX = cssX * dpr;
-      const physY = cssY * dpr;
-      for (const w of wordOverlays) {
-        if (physX >= w.x0 && physX <= w.x1 && physY >= w.y0 && physY <= w.y1) {
-          onWordClick(w);
-          return;
-        }
-      }
+      ctx.fillRect(r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
+      ctx.strokeRect(r.x * dpr, r.y * dpr, r.w * dpr, r.h * dpr);
     }
   }
 
+  // Redraw overlay when committed selection changes
+  useEffect(drawOverlay, [selectedRegion]);
+
+  function relCoords(e: React.MouseEvent): { x: number; y: number } {
+    const overlay = overlayRef.current!;
+    const rect = overlay.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function onDown(e: React.MouseEvent) {
+    if (clickMode !== "drag-replace") return;
+    const { x, y } = relCoords(e);
+    dragRef.current = { active: true, sx: x, sy: y, cx: x, cy: y };
+    forceRedraw((n) => n + 1);
+    drawOverlay();
+  }
+  function onMove(e: React.MouseEvent) {
+    if (!dragRef.current.active) return;
+    const { x, y } = relCoords(e);
+    dragRef.current.cx = x;
+    dragRef.current.cy = y;
+    drawOverlay();
+  }
+  function onUp(e: React.MouseEvent) {
+    if (clickMode === "place-sign") {
+      const { x, y } = relCoords(e);
+      onCanvasClick?.(x, y);
+      return;
+    }
+    if (!dragRef.current.active) return;
+    const { sx, sy, cx, cy } = dragRef.current;
+    dragRef.current.active = false;
+    const x = Math.min(sx, cx), y = Math.min(sy, cy);
+    const w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+    drawOverlay();
+    if (w < 5 || h < 5) return; // ignore tiny/accidental drags
+    const base = canvasRef.current!;
+    const dpr = window.devicePixelRatio || 1;
+    const bg = sampleBackground(base, x, y, w, h, dpr);
+    onRegionSelected?.({ x, y, w, h }, bg);
+  }
+
   const safeTotal = totalPages || 1;
-  const cursorStyle =
-    clickMode === "select-word" ? "pointer" :
-    clickMode === "place-sign" ? "crosshair" :
-    "default";
+  const cursor = clickMode === "place-sign" ? "crosshair" : clickMode === "drag-replace" ? "crosshair" : "default";
 
   return (
     <div className="flex flex-col items-center gap-3 w-full">
@@ -141,18 +182,15 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           <canvas
             ref={overlayRef}
             className="absolute inset-0"
-            style={{
-              pointerEvents: clickMode ? "auto" : "none",
-              cursor: cursorStyle,
-            }}
-            onClick={handleOverlayClick}
+            style={{ pointerEvents: clickMode ? "auto" : "none", cursor }}
+            onMouseDown={onDown}
+            onMouseMove={onMove}
+            onMouseUp={onUp}
+            onMouseLeave={() => { if (dragRef.current.active) { dragRef.current.active = false; drawOverlay(); } }}
           />
-          {/* Click-mode hint banner */}
           {clickMode && (
             <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-black/70 text-white text-xs px-3 py-1.5 rounded-full pointer-events-none select-none whitespace-nowrap">
-              {clickMode === "select-word"
-                ? t("hint_click_word")
-                : t("hint_click_place")}
+              {clickMode === "drag-replace" ? t("hint_drag_region") : t("hint_click_place")}
             </div>
           )}
         </div>
