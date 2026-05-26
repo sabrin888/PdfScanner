@@ -263,6 +263,7 @@ export default function PdfEditor() {
     setReplaceRegionRect(rect);
     setReplaceBg(bg);
     setCanvasClickMode(null);
+    setShowPanel(true); // re-open mobile panel so user can type replacement
   }
 
   function handleCanvasClick(cssX: number, cssY: number) {
@@ -304,7 +305,7 @@ export default function PdfEditor() {
     handleResult,
     region: replaceRegionRect,
     bgColor: replaceBg,
-    onStartDrag: () => setCanvasClickMode("drag-replace"),
+    onStartDrag: () => { setCanvasClickMode("drag-replace"); setShowPanel(false); },
     onClearRegion: () => { setReplaceRegionRect(null); setReplaceBg(null); },
     signClickPos,
     onActivatePlace: () => setCanvasClickMode("place-sign"),

@@ -171,6 +171,52 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
     onRegionSelected?.({ x, y, w, h }, bg);
   }
 
+  function touchCoords(e: React.TouchEvent): { x: number; y: number } {
+    const overlay = overlayRef.current!;
+    const rect = overlay.getBoundingClientRect();
+    const t = e.touches[0] ?? e.changedTouches[0];
+    return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+  }
+
+  function onTouchStart(e: React.TouchEvent) {
+    if (clickMode !== "drag-replace") return;
+    e.preventDefault();
+    const { x, y } = touchCoords(e);
+    dragRef.current = { active: true, sx: x, sy: y, cx: x, cy: y };
+    forceRedraw((n) => n + 1);
+    drawOverlay();
+  }
+  function onTouchMove(e: React.TouchEvent) {
+    if (!dragRef.current.active) return;
+    e.preventDefault();
+    const { x, y } = touchCoords(e);
+    dragRef.current.cx = x;
+    dragRef.current.cy = y;
+    drawOverlay();
+  }
+  function onTouchEnd(e: React.TouchEvent) {
+    if (clickMode === "place-sign") {
+      e.preventDefault();
+      const overlay = overlayRef.current!;
+      const rect = overlay.getBoundingClientRect();
+      const t = e.changedTouches[0];
+      onCanvasClick?.(t.clientX - rect.left, t.clientY - rect.top);
+      return;
+    }
+    if (!dragRef.current.active) return;
+    e.preventDefault();
+    const { sx, sy, cx, cy } = dragRef.current;
+    dragRef.current.active = false;
+    const x = Math.min(sx, cx), y = Math.min(sy, cy);
+    const w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+    drawOverlay();
+    if (w < 5 || h < 5) return;
+    const base = canvasRef.current!;
+    const dpr = window.devicePixelRatio || 1;
+    const bg = sampleBackground(base, x, y, w, h, dpr);
+    onRegionSelected?.({ x, y, w, h }, bg);
+  }
+
   const safeTotal = totalPages || 1;
   const cursor = clickMode === "place-sign" ? "crosshair" : clickMode === "drag-replace" ? "crosshair" : "default";
 
@@ -182,11 +228,14 @@ const PdfViewer = forwardRef<PdfViewerHandle, Props>(function PdfViewer(
           <canvas
             ref={overlayRef}
             className="absolute inset-0"
-            style={{ pointerEvents: clickMode ? "auto" : "none", cursor }}
+            style={{ pointerEvents: clickMode ? "auto" : "none", cursor, touchAction: clickMode ? "none" : "auto" }}
             onMouseDown={onDown}
             onMouseMove={onMove}
             onMouseUp={onUp}
             onMouseLeave={() => { if (dragRef.current.active) { dragRef.current.active = false; drawOverlay(); } }}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
           />
           {clickMode && (
             <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-black/70 text-white text-xs px-3 py-1.5 rounded-full pointer-events-none select-none whitespace-nowrap">
