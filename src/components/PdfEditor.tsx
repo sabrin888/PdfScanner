@@ -2,8 +2,10 @@
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { useI18n } from "@/context/I18nContext";
-import { saveDoc, loadDoc, clearDoc } from "@/lib/storage";
+import { saveDoc, loadDoc, clearDoc, saveToRecent, loadRecent, deleteRecent } from "@/lib/storage";
+import type { RecentFile } from "@/lib/storage";
 import PdfUpload from "./PdfUpload";
+import RecentFiles from "./RecentFiles";
 import PdfViewer, { PdfViewerHandle } from "./PdfViewer";
 import Toolbar, { ToolId } from "./Toolbar";
 import OcrTool from "./tools/OcrTool";
@@ -19,10 +21,13 @@ interface HistoryEntry {
   time: string;
 }
 
+const MAX_UNDO = 20;
+
 export default function PdfEditor() {
   const { t } = useI18n();
   const viewerRef = useRef<PdfViewerHandle>(null);
 
+  // Document state
   const [pdfBytes, setPdfBytes] = useState<Uint8Array | null>(null);
   const [filename, setFilename] = useState("");
   const [totalPages, setTotalPages] = useState(0);
@@ -32,6 +37,13 @@ export default function PdfEditor() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showPanel, setShowPanel] = useState(false);
   const [restoring, setRestoring] = useState(true);
+  const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
+
+  // Undo / Redo stacks (refs to avoid re-render cost; canUndo/canRedo drive UI)
+  const undoStackRef = useRef<Uint8Array[]>([]);
+  const redoStackRef = useRef<Uint8Array[]>([]);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
 
   // Replace tool state
   const [ocrWords, setOcrWords] = useState<OcrWord[]>([]);
@@ -43,7 +55,7 @@ export default function PdfEditor() {
   // Canvas interaction mode
   const [canvasClickMode, setCanvasClickMode] = useState<"select-word" | "place-sign" | null>(null);
 
-  // Clear interactive state whenever the active tool changes
+  // Clear interactive state when tool changes
   useEffect(() => {
     setCanvasClickMode(null);
     if (activeTool !== "replace") {
@@ -55,53 +67,113 @@ export default function PdfEditor() {
     }
   }, [activeTool]);
 
-  // Restore a previously-open document on first load
+  // Restore current document + recent files on first load
   useEffect(() => {
     let active = true;
     (async () => {
-      const saved = await loadDoc();
-      if (active && saved && saved.bytes.length > 0) {
-        setPdfBytes(saved.bytes);
-        setFilename(saved.filename);
-        setTotalPages(saved.totalPages || 1);
-        setCurrentPage(saved.currentPage || 1);
-        setHistory(saved.history || []);
+      const [saved, recent] = await Promise.all([loadDoc(), loadRecent()]);
+      if (active) {
+        if (saved && saved.bytes.length > 0) {
+          setPdfBytes(saved.bytes);
+          setFilename(saved.filename);
+          setTotalPages(saved.totalPages || 1);
+          setCurrentPage(saved.currentPage || 1);
+          setHistory(saved.history || []);
+        }
+        setRecentFiles(recent);
+        setRestoring(false);
       }
-      if (active) setRestoring(false);
     })();
     return () => { active = false; };
   }, []);
 
-  // Persist whenever document or edits change
+  // Persist document + recent-file entry on every change
   useEffect(() => {
-    if (restoring || !pdfBytes) return;
+    if (restoring || !pdfBytes || !filename) return;
     saveDoc({ bytes: pdfBytes, filename, totalPages, currentPage, history });
+    saveToRecent({ bytes: pdfBytes, filename, totalPages });
   }, [pdfBytes, filename, totalPages, currentPage, history, restoring]);
 
-  function newFile() {
-    setPdfBytes(null);
-    setSessionId(null);
-    setHistory([]);
-    setActiveTool(null);
+  // Keyboard shortcuts for undo/redo
+  const undoRef = useRef<() => void>(() => {});
+  const redoRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoRef.current();
+      } else if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === "y" || (e.key === "z" && e.shiftKey))
+      ) {
+        e.preventDefault();
+        redoRef.current();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    if (!undoStackRef.current.length) return;
+    const prev = undoStackRef.current[undoStackRef.current.length - 1];
+    undoStackRef.current = undoStackRef.current.slice(0, -1);
+    setPdfBytes((cur) => {
+      if (cur) redoStackRef.current = [cur, ...redoStackRef.current.slice(0, MAX_UNDO - 1)];
+      return prev;
+    });
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(true);
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    if (!redoStackRef.current.length) return;
+    const next = redoStackRef.current[0];
+    redoStackRef.current = redoStackRef.current.slice(1);
+    setPdfBytes((cur) => {
+      if (cur) undoStackRef.current = [...undoStackRef.current.slice(-(MAX_UNDO - 1)), cur];
+      return next;
+    });
+    setCanUndo(true);
+    setCanRedo(redoStackRef.current.length > 0);
+  }, []);
+
+  // Keep refs in sync so keyboard handler always calls latest version
+  useEffect(() => { undoRef.current = handleUndo; });
+  useEffect(() => { redoRef.current = handleRedo; });
+
+  function resetEditorState() {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    setCanUndo(false);
+    setCanRedo(false);
     setOcrWords([]);
     setSelectedWord(null);
     setSignClickPos(null);
     setCanvasClickMode(null);
+    setActiveTool(null);
+    setHistory([]);
+    setShowPanel(false);
+  }
+
+  function newFile() {
+    setPdfBytes(null);
+    setSessionId(null);
+    setFilename("");
+    setTotalPages(0);
+    resetEditorState();
     clearDoc();
+    loadRecent().then(setRecentFiles);
   }
 
   async function handleFile(bytes: Uint8Array, name: string) {
     setPdfBytes(bytes);
     setFilename(name);
     setCurrentPage(1);
-    setActiveTool(null);
-    setOcrWords([]);
-    setSelectedWord(null);
-    setSignClickPos(null);
-    setCanvasClickMode(null);
-    setHistory([]);
     setTotalPages(0);
-    setShowPanel(false);
+    setSessionId(null);
+    resetEditorState();
 
     try {
       const pdfjsLib = await import("pdfjs-dist");
@@ -122,12 +194,34 @@ export default function PdfEditor() {
     }
   }
 
+  async function handleOpenRecent(file: RecentFile) {
+    const bytes = new Uint8Array(file.bytes);
+    setPdfBytes(bytes);
+    setFilename(file.filename);
+    setTotalPages(file.totalPages);
+    setCurrentPage(1);
+    setSessionId(null);
+    resetEditorState();
+  }
+
+  async function handleDeleteRecent(id: string) {
+    await deleteRecent(id);
+    setRecentFiles((prev) => prev.filter((f) => f.id !== id));
+  }
+
   const handleResult = useCallback(
     async (newBytes: Uint8Array, operation: string, params: object) => {
-      setPdfBytes(newBytes);
-      // Clear interactive overlays after a successful edit
-      setOcrWords([]);
-      setSelectedWord(null);
+      // Push current state to undo stack
+      setPdfBytes((cur) => {
+        if (cur) {
+          undoStackRef.current = [...undoStackRef.current.slice(-(MAX_UNDO - 1)), cur];
+          redoStackRef.current = [];
+          setCanUndo(true);
+          setCanRedo(false);
+        }
+        return newBytes;
+      });
+      // Clear sign placement but leave ocrWords for Replace multi-word flow
       setSignClickPos(null);
       setCanvasClickMode(null);
       const entry: HistoryEntry = { operation, params, time: new Date().toLocaleTimeString() };
@@ -163,15 +257,14 @@ export default function PdfEditor() {
 
   const getCanvas = useCallback(() => viewerRef.current?.getCanvas() ?? null, []);
 
-  // ─── Canvas interaction callbacks ─────────────────────────────────────────
   function handleWordClick(word: OcrWord) {
     setSelectedWord(word);
-    setCanvasClickMode(null); // deactivate click mode after selection
+    setCanvasClickMode(null);
   }
 
   function handleCanvasClick(cssX: number, cssY: number) {
     setSignClickPos({ cssX, cssY });
-    setCanvasClickMode(null); // deactivate after placement
+    setCanvasClickMode(null);
   }
 
   // ─── Restoring ────────────────────────────────────────────────────────────
@@ -187,7 +280,7 @@ export default function PdfEditor() {
   // ─── Upload screen ────────────────────────────────────────────────────────
   if (!pdfBytes) {
     return (
-      <div className="flex flex-col items-center justify-center flex-1 w-full px-4 py-16 min-h-[70vh]">
+      <div className="flex flex-col items-center flex-1 w-full px-4 py-12 min-h-[70vh]">
         <h1 className="text-2xl sm:text-3xl font-bold text-slate-800 dark:text-slate-100 mb-2 text-center">
           {t("app_title")}
         </h1>
@@ -195,11 +288,12 @@ export default function PdfEditor() {
           {t("app_subtitle")}
         </p>
         <PdfUpload onFile={handleFile} />
+        <RecentFiles files={recentFiles} onOpen={handleOpenRecent} onDelete={handleDeleteRecent} />
       </div>
     );
   }
 
-  // Shared props for tool content
+  // Shared props bundle for tool content
   const toolProps = {
     pdfBytes,
     currentPage,
@@ -209,7 +303,7 @@ export default function PdfEditor() {
     selectedWord,
     onWordsLoaded: (words: OcrWord[]) => setOcrWords(words),
     onStartWordSelect: () => setCanvasClickMode("select-word"),
-    onWordClick: handleWordClick,
+    onClearSelectedWord: () => setSelectedWord(null),
     signClickPos,
     onActivatePlace: () => setCanvasClickMode("place-sign"),
   };
@@ -220,7 +314,15 @@ export default function PdfEditor() {
 
       {/* Mobile toolbar */}
       <div className="md:hidden">
-        <Toolbar activeTool={activeTool} onSelect={selectTool} orientation="horizontal" />
+        <Toolbar
+          activeTool={activeTool}
+          onSelect={selectTool}
+          orientation="horizontal"
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+        />
       </div>
 
       {/* Main area */}
@@ -228,7 +330,15 @@ export default function PdfEditor() {
 
         {/* Desktop sidebar */}
         <div className="hidden md:flex flex-shrink-0">
-          <Toolbar activeTool={activeTool} onSelect={selectTool} orientation="vertical" />
+          <Toolbar
+            activeTool={activeTool}
+            onSelect={selectTool}
+            orientation="vertical"
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+          />
         </div>
 
         {/* PDF viewer */}
@@ -311,7 +421,7 @@ interface ToolProps {
   selectedWord: OcrWord | null;
   onWordsLoaded: (words: OcrWord[]) => void;
   onStartWordSelect: () => void;
-  onWordClick: (word: OcrWord) => void;
+  onClearSelectedWord: () => void;
   signClickPos: { cssX: number; cssY: number } | null;
   onActivatePlace: () => void;
 }
@@ -319,7 +429,7 @@ interface ToolProps {
 // ─── Shared tool content ─────────────────────────────────────────────────────
 function ToolContent({ activeTool, toolProps }: { activeTool: ToolId; toolProps: ToolProps }) {
   const { pdfBytes, currentPage, getCanvas, handleResult, ocrWords, selectedWord,
-    onWordsLoaded, onStartWordSelect, signClickPos, onActivatePlace } = toolProps;
+    onWordsLoaded, onStartWordSelect, onClearSelectedWord, signClickPos, onActivatePlace } = toolProps;
   return (
     <>
       {activeTool === "ocr" && (
@@ -335,6 +445,7 @@ function ToolContent({ activeTool, toolProps }: { activeTool: ToolId; toolProps:
           selectedWord={selectedWord}
           onWordsLoaded={onWordsLoaded}
           onStartWordSelect={onStartWordSelect}
+          onClearSelectedWord={onClearSelectedWord}
         />
       )}
       {activeTool === "annotate" && (

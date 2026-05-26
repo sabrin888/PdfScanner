@@ -43,17 +43,7 @@ export async function ocrCanvas(
     }
   };
 
-  // Try eng+som (covers Somali Latin script + English); fall back to eng-only
-  // if the Somali traineddata is unavailable on the CDN.
-  try {
-    return await runOcr("eng+som");
-  } catch {
-    try {
-      return await runOcr("eng");
-    } catch (err) {
-      throw err;
-    }
-  }
+  return await runOcr("eng");
 }
 
 function extractWords(blocks: Tesseract.Block[]): OcrWord[] {
