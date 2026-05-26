@@ -7,13 +7,13 @@ import type { RecentFile } from "@/lib/storage";
 import PdfUpload from "./PdfUpload";
 import RecentFiles from "./RecentFiles";
 import PdfViewer, { PdfViewerHandle } from "./PdfViewer";
+import type { Region, RgbColor } from "./PdfViewer";
 import Toolbar, { ToolId } from "./Toolbar";
 import OcrTool from "./tools/OcrTool";
 import ReplaceTool from "./tools/ReplaceTool";
 import AnnotateTool from "./tools/AnnotateTool";
 import SignTool from "./tools/SignTool";
 import FillTool from "./tools/FillTool";
-import type { OcrWord } from "@/lib/ocr";
 
 interface HistoryEntry {
   operation: string;
@@ -45,22 +45,22 @@ export default function PdfEditor() {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
-  // Replace tool state
-  const [ocrWords, setOcrWords] = useState<OcrWord[]>([]);
-  const [selectedWord, setSelectedWord] = useState<OcrWord | null>(null);
+  // Replace tool state (drag a region → cover with sampled bg colour + new text)
+  const [replaceRegionRect, setReplaceRegionRect] = useState<Region | null>(null);
+  const [replaceBg, setReplaceBg] = useState<RgbColor | null>(null);
 
   // Sign tool state
   const [signClickPos, setSignClickPos] = useState<{ cssX: number; cssY: number } | null>(null);
 
   // Canvas interaction mode
-  const [canvasClickMode, setCanvasClickMode] = useState<"select-word" | "place-sign" | null>(null);
+  const [canvasClickMode, setCanvasClickMode] = useState<"place-sign" | "drag-replace" | null>(null);
 
   // Clear interactive state when tool changes
   useEffect(() => {
     setCanvasClickMode(null);
     if (activeTool !== "replace") {
-      setOcrWords([]);
-      setSelectedWord(null);
+      setReplaceRegionRect(null);
+      setReplaceBg(null);
     }
     if (activeTool !== "sign") {
       setSignClickPos(null);
@@ -148,8 +148,8 @@ export default function PdfEditor() {
     redoStackRef.current = [];
     setCanUndo(false);
     setCanRedo(false);
-    setOcrWords([]);
-    setSelectedWord(null);
+    setReplaceRegionRect(null);
+    setReplaceBg(null);
     setSignClickPos(null);
     setCanvasClickMode(null);
     setActiveTool(null);
@@ -221,8 +221,10 @@ export default function PdfEditor() {
         }
         return newBytes;
       });
-      // Clear sign placement but leave ocrWords for Replace multi-word flow
+      // Clear interactive selections after an edit applies
       setSignClickPos(null);
+      setReplaceRegionRect(null);
+      setReplaceBg(null);
       setCanvasClickMode(null);
       const entry: HistoryEntry = { operation, params, time: new Date().toLocaleTimeString() };
       setHistory((h) => [entry, ...h]);
@@ -257,8 +259,9 @@ export default function PdfEditor() {
 
   const getCanvas = useCallback(() => viewerRef.current?.getCanvas() ?? null, []);
 
-  function handleWordClick(word: OcrWord) {
-    setSelectedWord(word);
+  function handleRegionSelected(rect: Region, bg: RgbColor) {
+    setReplaceRegionRect(rect);
+    setReplaceBg(bg);
     setCanvasClickMode(null);
   }
 
@@ -299,11 +302,10 @@ export default function PdfEditor() {
     currentPage,
     getCanvas,
     handleResult,
-    ocrWords,
-    selectedWord,
-    onWordsLoaded: (words: OcrWord[]) => setOcrWords(words),
-    onStartWordSelect: () => setCanvasClickMode("select-word"),
-    onClearSelectedWord: () => setSelectedWord(null),
+    region: replaceRegionRect,
+    bgColor: replaceBg,
+    onStartDrag: () => setCanvasClickMode("drag-replace"),
+    onClearRegion: () => { setReplaceRegionRect(null); setReplaceBg(null); },
     signClickPos,
     onActivatePlace: () => setCanvasClickMode("place-sign"),
   };
@@ -349,10 +351,9 @@ export default function PdfEditor() {
             currentPage={currentPage}
             totalPages={totalPages}
             onPageChange={setCurrentPage}
-            wordOverlays={activeTool === "replace" ? ocrWords : []}
-            selectedWord={activeTool === "replace" ? selectedWord : null}
             clickMode={canvasClickMode}
-            onWordClick={handleWordClick}
+            selectedRegion={activeTool === "replace" ? replaceRegionRect : null}
+            onRegionSelected={handleRegionSelected}
             onCanvasClick={handleCanvasClick}
           />
         </div>
@@ -417,19 +418,18 @@ interface ToolProps {
   currentPage: number;
   getCanvas: () => HTMLCanvasElement | null;
   handleResult: (bytes: Uint8Array, op: string, params: object) => Promise<void>;
-  ocrWords: OcrWord[];
-  selectedWord: OcrWord | null;
-  onWordsLoaded: (words: OcrWord[]) => void;
-  onStartWordSelect: () => void;
-  onClearSelectedWord: () => void;
+  region: Region | null;
+  bgColor: RgbColor | null;
+  onStartDrag: () => void;
+  onClearRegion: () => void;
   signClickPos: { cssX: number; cssY: number } | null;
   onActivatePlace: () => void;
 }
 
 // ─── Shared tool content ─────────────────────────────────────────────────────
 function ToolContent({ activeTool, toolProps }: { activeTool: ToolId; toolProps: ToolProps }) {
-  const { pdfBytes, currentPage, getCanvas, handleResult, ocrWords, selectedWord,
-    onWordsLoaded, onStartWordSelect, onClearSelectedWord, signClickPos, onActivatePlace } = toolProps;
+  const { pdfBytes, currentPage, getCanvas, handleResult, region, bgColor,
+    onStartDrag, onClearRegion, signClickPos, onActivatePlace } = toolProps;
   return (
     <>
       {activeTool === "ocr" && (
@@ -441,11 +441,10 @@ function ToolContent({ activeTool, toolProps }: { activeTool: ToolId; toolProps:
           pageIndex={currentPage - 1}
           getCanvas={getCanvas}
           onResult={handleResult}
-          ocrWords={ocrWords}
-          selectedWord={selectedWord}
-          onWordsLoaded={onWordsLoaded}
-          onStartWordSelect={onStartWordSelect}
-          onClearSelectedWord={onClearSelectedWord}
+          region={region}
+          bgColor={bgColor}
+          onStartDrag={onStartDrag}
+          onClearRegion={onClearRegion}
         />
       )}
       {activeTool === "annotate" && (

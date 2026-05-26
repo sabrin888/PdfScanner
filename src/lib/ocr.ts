@@ -10,9 +10,12 @@ export interface OcrWord {
 }
 
 /**
- * Run OCR on a canvas element with automatic language detection.
- * Tries English + Somali combined first; falls back to English-only if
- * the Somali language data is unavailable on the CDN.
+ * Run OCR on a canvas element — fully offline (no CDN).
+ *
+ * The worker script, WASM engine, and English language data are all served
+ * from /public so OCR works without any network access. Somali is written in
+ * the Latin alphabet, so the English model reads printed Somali text correctly
+ * at the character level (Tesseract ships no dedicated Somali model).
  */
 export async function ocrCanvas(
   canvas: HTMLCanvasElement,
@@ -20,6 +23,8 @@ export async function ocrCanvas(
 ): Promise<OcrWord[]> {
   const workerOpts = {
     workerPath: "/tesseract-worker.min.js",
+    corePath: "/tesseract-core",   // local WASM engine (Tesseract picks the variant)
+    langPath: "/tessdata",         // local eng.traineddata.gz
     gzip: true,
     logger: (m: { status: string; progress: number }) => {
       if (!onProgress) return;
@@ -33,17 +38,13 @@ export async function ocrCanvas(
     },
   };
 
-  const runOcr = async (language: string): Promise<OcrWord[]> => {
-    const worker = await createWorker(language, 1, workerOpts);
-    try {
-      const result = await worker.recognize(canvas);
-      return extractWords(result.data.blocks ?? []);
-    } finally {
-      await worker.terminate();
-    }
-  };
-
-  return await runOcr("eng");
+  const worker = await createWorker("eng", 1, workerOpts);
+  try {
+    const result = await worker.recognize(canvas);
+    return extractWords(result.data.blocks ?? []);
+  } finally {
+    await worker.terminate();
+  }
 }
 
 function extractWords(blocks: Tesseract.Block[]): OcrWord[] {
